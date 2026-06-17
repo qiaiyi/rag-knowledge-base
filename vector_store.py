@@ -49,23 +49,11 @@ class KnowledgeBase:
         :param top_k: 返回的最大结果数
         :return: 文档内容列表（按相关度降序）
         """
-        # 1. 将用户问题转为查询向量
         query_embedding = get_embedding(query)
-        
-        # 2. 在向量库中搜索最相似的 top_k 个向量
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=top_k
         )
-        
-        # results 结构示例：
-        # {
-        #   'documents': [['文本块1', '文本块2', ...]],
-        #   'distances': [[0.12, 0.45, ...]],
-        #   'metadatas': [[{}, {}, ...]],
-        #   'ids': [['id1', 'id2', ...]]
-        # }
-        # 返回第一个查询（只有一个）的 documents 列表
         return results["documents"][0] if results["documents"] else []
 
     def search_with_details(self, query, top_k=3):
@@ -78,12 +66,34 @@ class KnowledgeBase:
         )
         return results
 
-# 简单测试（直接运行此文件时执行）
+    def search_with_scores(self, query, top_k=5, score_threshold=0.5):
+        """
+        检索并返回文档内容和相似度分数（经过阈值过滤）
+        :param query: 查询文本
+        :param top_k: 初检返回的最大数量
+        :param score_threshold: 相似度阈值（0~1），低于该值的片段将被过滤
+        :return: 列表，每个元素为 (document, similarity_score)
+        """
+        query_embedding = get_embedding(query)
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["documents", "distances"]
+        )
+        documents = results["documents"][0]
+        distances = results["distances"][0]   # 余弦距离，越小越相似
+        
+        filtered = []
+        for doc, dist in zip(documents, distances):
+            # 余弦距离转相似度：similarity = 1 - dist
+            # 注意：Chroma 默认余弦距离范围 [0, 2]，相似度范围 [-1, 1]
+            similarity = 1 / (1 + dist)   # 替换原来的 1 - dist
+            if similarity >= score_threshold:
+                filtered.append((doc, similarity))
+        return filtered  # 按相似度降序（因为 distance 升序，filtered 中已经是从高到低）
+
 if __name__ == "__main__":
-    # 创建一个名为 test_kb 的知识库（数据保存在 ./chroma_data 目录）
     kb = KnowledgeBase("test_kb")
-    
-    # 添加几个示例文档块
     kb.add_documents([
         "北京是中国的首都，位于华北平原北部，历史悠久。",
         "Python 是一种高级编程语言，由 Guido van Rossum 创建。",
@@ -93,8 +103,6 @@ if __name__ == "__main__":
         {"source": "编程知识.txt"},
         {"source": "AI知识.txt"}
     ])
-    
-    # 检索测试
     query = "哪种编程语言比较流行？"
     print(f"\n问题：{query}")
     results = kb.search(query, top_k=2)

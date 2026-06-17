@@ -1,0 +1,26 @@
+[
+    {
+        "question": "Python 是由谁创建的？",
+        "expected_keywords": ["Guido van Rossum", "吉多·范罗苏姆"],
+        "should_contain_citation": true,
+        "requires_factual": true
+    },
+    {
+        "question": "RAG 技术的主要优点是什么？",
+        "expected_keywords": ["减少幻觉", "知识更新", "提高准确性"],
+        "should_contain_citation": true,
+        "requires_factual": true
+    },
+    {
+        "question": "今天天气怎么样？",
+        "expected_keywords": ["资料中未提及", "未找到相关内容"],
+        "should_contain_citation": false,
+        "requires_factual": false
+    },
+    {
+        "question": "谁发明了激光？",
+        "expected_keywords": ["资料中未提及"],
+        "should_contain_citation": false,
+        "requires_factual": false
+    }
+]
