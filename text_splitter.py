@@ -1,4 +1,5 @@
 import re
+from config import CONFIG
 
 def split_by_fixed(text, chunk_size=500, overlap=100):
     """固定长度切分（带重叠）"""
@@ -13,7 +14,7 @@ def split_by_fixed(text, chunk_size=500, overlap=100):
         start += chunk_size - overlap
     return chunks
 
-def split_by_sentence(text, chunk_size=500, overlap=0):
+def split_by_sentence(text, chunk_size=500, overlap=100):
     """按句子边界切分，尽量保持句子完整"""
     # 按中文标点分割成句子列表（保留标点）
     sentences = re.split(r'(?<=[。！？；\n])\s*', text)
@@ -34,29 +35,38 @@ def split_by_sentence(text, chunk_size=500, overlap=0):
         chunks.append(current.strip())
     return chunks
 
-def split_by_paragraph(text, min_chunk_size=200):
-    """按段落切分（以连续换行为界），短段落合并"""
+
+def split_by_paragraph(text, chunk_size=500):
+    """
+    按段落切分：将文本按空行分割为段落，然后合并短段落，
+    确保每个分块长度不超过 chunk_size（硬上限）。
+    """
     paragraphs = re.split(r'\n\s*\n', text)
     chunks = []
     current = ""
+
     for para in paragraphs:
-        if len(current) + len(para) <= min_chunk_size * 2:
-            current += para + "\n\n"
+        # 如果当前块已有内容，且加入新段落会超过上限，则先保存当前块
+        if len(current) + len(para) > chunk_size and current:
+            chunks.append(current.strip())
+            current = para + "\n\n"  # 新块从此段落开始
         else:
-            if current:
-                chunks.append(current.strip())
-            current = para + "\n\n"
+            current += para + "\n\n"
+
+    # 处理末尾未保存的块
     if current:
         chunks.append(current.strip())
+
     return chunks
 
-def split_text(text, chunk_size=500, overlap=100, method="fixed"):
+
+def split_text(text, chunk_size=CONFIG.CHUNK_SIZE, overlap=CONFIG.CHUNK_OVERLAP, method="fixed"):
     """统一接口，方便切换"""
     if method == "fixed":
         return split_by_fixed(text, chunk_size, overlap)
     elif method == "sentence":
         return split_by_sentence(text, chunk_size, overlap)
     elif method == "paragraph":
-        return split_by_paragraph(text, chunk_size)
+        return split_by_paragraph(text, chunk_size=chunk_size)
     else:
         raise ValueError(f"未知切分方法: {method}")
