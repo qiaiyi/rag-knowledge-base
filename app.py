@@ -2,12 +2,26 @@ import streamlit as st
 import requests
 import re
 import os
+import json
+from dotenv import load_dotenv
+
+# 加载 .env 文件（若存在）
+load_dotenv()
 
 # ---------- 配置 ----------
 API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
+# 读取后端鉴权密钥，若未设置则提示
+API_KEY = os.getenv("ADMIN_API_KEY", "")
+if not API_KEY:
+    st.error("❌ 未设置 ADMIN_API_KEY 环境变量，请在 .env 中配置或系统环境中导出")
+    st.stop()
+
 STREAM_ENDPOINT = f"{API_URL}/ask/stream"
 UPLOAD_ENDPOINT = f"{API_URL}/upload"
 NONSTREAM_ENDPOINT = f"{API_URL}/ask"
+
+# 通用的请求头（携带鉴权）
+HEADERS = {"X-API-Key": API_KEY}
 
 # ---------- 辅助函数 ----------
 def highlight_citations(text):
@@ -45,7 +59,7 @@ with st.sidebar:
             with st.spinner("正在处理文档，请稍候..."):
                 try:
                     files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
-                    resp = requests.post(UPLOAD_ENDPOINT, files=files, timeout=60)
+                    resp = requests.post(UPLOAD_ENDPOINT, files=files, headers=HEADERS, timeout=60)
                     if resp.status_code == 200:
                         data = resp.json()
                         msg = data.get("message", "")
@@ -69,15 +83,12 @@ with st.sidebar:
     else:
         st.caption("尚未上传任何文档，请上传以建立索引。")
 
-    # ---------- 控制按钮移至侧边栏（此处始终可见） ----------
     st.divider()
     st.subheader("⚙️ 控制面板")
     
-    # 停止生成按钮（点击后停止当前脚本执行，但已发出的HTTP请求不会中断）
     if st.button("🛑 停止生成（结束当前请求）", use_container_width=True):
-        st.stop()  # 停止当前脚本执行
+        st.stop()
     
-    # 清空对话历史
     if st.button("🗑️ 清空对话历史", use_container_width=True):
         st.session_state.messages = []
         st.rerun()
@@ -85,7 +96,6 @@ with st.sidebar:
 # ---------- 主区域：对话 ----------
 st.header("💬 智能问答")
 
-# 显示历史对话
 for idx, (q, a, srcs) in enumerate(st.session_state.messages):
     with st.chat_message("user"):
         st.markdown(f"**问题 {idx+1}:** {q}")
@@ -98,13 +108,11 @@ for idx, (q, a, srcs) in enumerate(st.session_state.messages):
                 for s in format_sources(srcs):
                     st.markdown(s)
 
-# 输入区域
 question = st.chat_input("输入你的问题，例如：RAG 技术有哪些优点？")
-col_ask, col_stop = st.columns([1, 5])
+col_ask, _ = st.columns([1, 5])
 with col_ask:
     use_stream = st.toggle("流式输出", value=True, help="开启后答案将逐字显示，体验更佳")
 
-# 处理提问
 if question:
     if use_stream:
         try:
@@ -112,40 +120,53 @@ if question:
                 st.markdown(f"**问题:** {question}")
             with st.chat_message("assistant"):
                 placeholder = st.empty()
-                full_answer = ""
+                full_response = ""
                 sources = []
+
                 try:
                     resp = requests.post(
                         STREAM_ENDPOINT,
                         params={"question": question},
+                        headers=HEADERS,
                         stream=True,
                         timeout=120
                     )
                     resp.raise_for_status()
+
                     for chunk in resp.iter_content(chunk_size=None, decode_unicode=True):
                         if chunk:
-                            full_answer += chunk
-                            placeholder.markdown(f"**回答:**\n\n{full_answer}▌")
-                    highlighted = highlight_citations(full_answer)
-                    placeholder.markdown(highlighted, unsafe_allow_html=True)
-                    # 额外获取来源
-                    try:
-                        src_resp = requests.post(
-                            NONSTREAM_ENDPOINT,
-                            params={"question": question},
-                            timeout=30
-                        )
-                        if src_resp.status_code == 200:
-                            sources = src_resp.json().get("sources", [])
-                    except:
-                        pass
+                            full_response += chunk
+                            if "__SOURCES__:" in full_response:
+                                parts = full_response.split("__SOURCES__:", 1)
+                                answer_text = parts[0]
+                                sources_json = parts[1] if len(parts) > 1 else "[]"
+                                try:
+                                    sources = json.loads(sources_json)
+                                except json.JSONDecodeError:
+                                    sources = []
+                                highlighted = highlight_citations(answer_text)
+                                placeholder.markdown(highlighted, unsafe_allow_html=True)
+                            else:
+                                placeholder.markdown(f"**回答:**\n\n{full_response}▌", unsafe_allow_html=True)
+
+                    if not sources and "__SOURCES__:" not in full_response:
+                        answer_text = full_response
+                        sources = []
+                        placeholder.markdown(highlight_citations(answer_text), unsafe_allow_html=True)
+                    elif sources and "__SOURCES__:" in full_response:
+                        answer_text = full_response.split("__SOURCES__:", 1)[0]
+                        placeholder.markdown(highlight_citations(answer_text), unsafe_allow_html=True)
+
                 except requests.Timeout:
                     st.error("⏱️ 生成超时，请稍后重试或关闭流式开关")
                 except requests.ConnectionError:
                     st.error("❌ 无法连接到后端服务")
                 except Exception as e:
                     st.error(f"发生错误：{e}")
-                st.session_state.messages.append((question, full_answer, sources))
+
+                if 'answer_text' not in locals():
+                    answer_text = full_response.split("__SOURCES__:", 1)[0] if "__SOURCES__:" in full_response else full_response
+                st.session_state.messages.append((question, answer_text, sources))
         except Exception as e:
             st.error(f"流式请求失败：{e}")
     else:
@@ -157,6 +178,7 @@ if question:
                     resp = requests.post(
                         NONSTREAM_ENDPOINT,
                         params={"question": question},
+                        headers=HEADERS,
                         timeout=90
                     )
                     resp.raise_for_status()

@@ -1,8 +1,6 @@
 import os
-import json
 import logging
-import shutil
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header  
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from document_loader import load_document
@@ -25,7 +23,27 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 
-app = FastAPI()
+# ===================== 新增：API Key 鉴权（零信任安全边界） =====================
+# 从环境变量读取预设密钥（务必在 .env 中配置 ADMIN_API_KEY）
+EXPECTED_API_KEY = os.getenv("ADMIN_API_KEY")
+
+async def validate_api_key(api_key: str = Header(..., alias="X-API-Key")):
+    """
+    全局鉴权依赖函数：验证请求头中的 X-API-Key
+    - 如果密钥匹配 -> 返回密钥本身（供后续使用，此处仅作验证）
+    - 如果缺失或不匹配 -> 抛出 403 禁止访问
+    """
+    if api_key != EXPECTED_API_KEY:
+        raise HTTPException(
+            status_code=403, 
+            detail="无效的 API Key，拒绝访问"
+        )
+    return api_key
+# ============================================================================
+
+
+# ===== 修改：在创建 app 时挂载全局鉴权依赖 =====
+app = FastAPI(dependencies=[Depends(validate_api_key)])
 
 # 允许跨域（Streamlit 前端）
 app.add_middleware(
@@ -38,9 +56,15 @@ app.add_middleware(
 # 全局知识库实例（持久化到 ./chroma_data）
 kb = KnowledgeBase("main_kb")
 
-# 允许的文件扩展名和大小限制（放在文件顶部常量区）
+# 允许的文件扩展名和大小限制
 ALLOWED_EXTENSIONS = {".txt", ".pdf", ".docx"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+# ===== 新增：根路径豁免鉴权（方便健康检查/演示） =====
+@app.get("/", dependencies=[])  # dependencies=[] 表示此路径不需要 API Key
+def root():
+    return {"message": "RAG 知识库 API v2.0 运行中，请携带 X-API-Key 访问其他接口"}
 
 
 @app.post("/upload")
@@ -73,7 +97,6 @@ async def upload_file(file: UploadFile = File(...)):
         text = load_document(temp_path)
         chunks = split_text(text, chunk_size=CONFIG.CHUNK_SIZE, overlap=CONFIG.CHUNK_OVERLAP)
         metadatas = [{"source": file.filename} for _ in chunks]
-        # add_documents 现在是异步方法，需要 await
         await kb.add_documents(chunks, metadatas=metadatas)
         
         return {"message": f"成功上传 {file.filename}，共添加 {len(chunks)} 个片段"}
@@ -94,7 +117,6 @@ async def ask(question: str):
     if not question or question.strip() == "":
         raise HTTPException(status_code=400, detail="问题不能为空")
     
-    # answer_question 现在是异步函数，需要 await
     answer, sources = await answer_question(
         question,
         kb,
@@ -112,7 +134,6 @@ async def ask_stream(question: str):
     if not question or question.strip() == "":
         raise HTTPException(status_code=400, detail="问题不能为空")
     
-    # retrieve_chunks 现在是异步函数，需要 await
     chunks = await retrieve_chunks(
         question,
         kb,
@@ -126,10 +147,4 @@ async def ask_stream(question: str):
     if not chunks:
         return StreamingResponse(iter(["知识库中暂时没有相关内容。"]), media_type="text/plain")
     
-    # stream_answer_with_context 是异步生成器，StreamingResponse 可直接接受
     return StreamingResponse(stream_answer_with_context(question, chunks), media_type="text/plain")
-
-
-@app.get("/")
-def root():
-    return {"message": "RAG 知识库 API v2.0 运行中"}

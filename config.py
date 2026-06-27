@@ -23,7 +23,7 @@ class Config:
     CHUNK_OVERLAP: int = 50          # 仅用于 fixed 方法
 
     # ---------- 检索与重排序 ----------
-    TOP_K: int = 10                  # 向量检索初选数
+    TOP_K: int = 10                 # 向量检索初选数
     SCORE_THRESHOLD: float = 0.3     # 相似度过滤阈值
     RERANK_TOP_N: int = 3            # 重排序后保留数
     USE_RERANK: bool = True

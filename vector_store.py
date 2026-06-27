@@ -1,3 +1,4 @@
+import asyncio
 import chromadb
 import hashlib
 import logging
@@ -30,7 +31,8 @@ class KnowledgeBase:
         
         for i, chunk in enumerate(chunks):
             content_hash = hashlib.md5(chunk.encode('utf-8')).hexdigest()
-            existing = self.collection.get(ids=[content_hash])
+            # 包装同步 get 操作
+            existing = await asyncio.to_thread(self.collection.get, ids=[content_hash])
             if not existing['ids']:
                 ids.append(content_hash)
                 new_chunks.append(chunk)
@@ -46,7 +48,9 @@ class KnowledgeBase:
             except EmbeddingError as e:
                 raise RuntimeError(f"生成向量失败: {e}") from e
             
-            self.collection.add(
+            # 包装同步 add 操作
+            await asyncio.to_thread(
+                self.collection.add,
                 embeddings=embeddings,
                 documents=new_chunks,
                 ids=ids,
@@ -64,7 +68,8 @@ class KnowledgeBase:
         :return: 文档内容列表（按相关度降序）
         """
         query_embedding = await get_embedding(query)
-        results = self.collection.query(
+        results = await asyncio.to_thread(
+            self.collection.query,
             query_embeddings=[query_embedding],
             n_results=top_k
         )
@@ -73,7 +78,8 @@ class KnowledgeBase:
     async def search_with_details(self, query, top_k=3):
         """异步返回详细信息（包括内容、距离、元数据）"""
         query_embedding = await get_embedding(query)
-        results = self.collection.query(
+        results = await asyncio.to_thread(
+            self.collection.query,
             query_embeddings=[query_embedding],
             n_results=top_k,
             include=["documents", "distances", "metadatas"]
@@ -89,7 +95,8 @@ class KnowledgeBase:
         :return: 列表，每个元素为 (document, similarity_score)
         """
         query_embedding = await get_embedding(query)
-        results = self.collection.query(
+        results = await asyncio.to_thread(
+            self.collection.query,
             query_embeddings=[query_embedding],
             n_results=top_k,
             include=["documents", "distances"]
