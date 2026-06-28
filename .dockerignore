@@ -1,0 +1,10 @@
+venv/
+chroma_data/
+data/
+__pycache__/
+*.pyc
+.env
+*.csv
+*.html
+eval_*.csv
+eval_*.html
