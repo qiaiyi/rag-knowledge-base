@@ -17,7 +17,12 @@ class KnowledgeBase:
         try:
             self.collection = self.client.get_collection(collection_name)
         except:
-            self.collection = self.client.create_collection(collection_name)
+            # metadata 中声明 "hnsw:space": "cosine"，告诉 Chroma 使用余弦距离
+            # 如果不声明，Chroma 默认用 L2（欧氏距离），后续相似度换算公式就不对
+            self.collection = self.client.create_collection(
+                collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
 
     async def add_documents(self, chunks, metadatas=None):
         """
@@ -106,9 +111,10 @@ class KnowledgeBase:
         
         filtered = []
         for doc, dist in zip(documents, distances):
-            # Chroma 余弦距离 dist = 1 - cosine_similarity，范围 [0, 2]
-            # 归一化至 [0, 1] 区间：similarity = 1 - dist / 2
-            similarity = 1 - dist / 2
+            # Chroma 余弦距离：dist = 1 - cos_sim，范围 [0, 2]
+            # 因此 similarity = 1 - dist = cos_sim，范围 [-1, 1]
+            # （embedding 模型输出的向量通常非负，实际范围在 [0, 1]）
+            similarity = 1 - dist
             if similarity >= score_threshold:
                 filtered.append((doc, similarity))
         return filtered
