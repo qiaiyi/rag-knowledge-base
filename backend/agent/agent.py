@@ -6,9 +6,9 @@ from typing import Annotated, Literal
 from typing_extensions import TypedDict
 from openai import AsyncOpenAI
 from langgraph.graph import StateGraph, START, END
-from config import CONFIG
-from vector_store import KnowledgeBase
-from tools import get_tool_schemas, get_tool_map, ASYNC_TOOL_NAMES
+from backend.config import CONFIG
+from backend.core.vector_store import KnowledgeBase
+from backend.agent.tools import get_tool_schemas, get_tool_map, ASYNC_TOOL_NAMES
 
 
 # ========== 1. 初始化 LLM 客户端 ==========

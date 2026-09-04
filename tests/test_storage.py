@@ -1,6 +1,6 @@
 import pytest
 
-from storage import ChatStore
+from backend.storage import ChatStore
 
 
 @pytest.fixture()

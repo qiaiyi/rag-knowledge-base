@@ -2,7 +2,7 @@ import asyncio
 import chromadb
 import hashlib
 import logging
-from embedding_util import get_embedding, EmbeddingError
+from backend.core.embedding_util import get_embedding, EmbeddingError
 
 logger = logging.getLogger(__name__)
 

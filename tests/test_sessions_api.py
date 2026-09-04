@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-import main
+from backend import main
 
 client = TestClient(main.app)
 AUTH = {"X-API-Key": "test-admin-key"}

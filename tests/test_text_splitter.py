@@ -1,6 +1,6 @@
 import pytest
 
-from text_splitter import split_by_fixed, split_by_sentence, split_by_paragraph, split_text
+from backend.core.text_splitter import split_by_fixed, split_by_sentence, split_by_paragraph, split_text
 
 
 class TestSplitByFixed:

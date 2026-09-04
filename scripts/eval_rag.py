@@ -1,7 +1,7 @@
 import asyncio
 import httpx
 import pandas as pd
-from config import CONFIG
+from backend.config import CONFIG
 
 # 读取测试集
 test_df = pd.read_csv("eval_questions.csv")

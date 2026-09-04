@@ -1,7 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-import main  # noqa: E402  conftest 已先设置好环境变量
+from backend import main  # noqa: E402  conftest 已先设置好环境变量
 
 client = TestClient(main.app)
 AUTH = {"X-API-Key": "test-admin-key"}

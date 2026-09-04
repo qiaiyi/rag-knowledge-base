@@ -1,6 +1,6 @@
 import asyncio
 import random
-from vector_store import KnowledgeBase
+from backend.core.vector_store import KnowledgeBase
 
 async def main():
     kb = KnowledgeBase("main_kb")

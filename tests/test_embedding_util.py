@@ -3,8 +3,8 @@ import asyncio
 import httpx
 import pytest
 
-import embedding_util
-from embedding_util import get_embedding, EmbeddingError
+from backend.core import embedding_util
+from backend.core.embedding_util import get_embedding, EmbeddingError
 
 
 def _patch_transport(monkeypatch, handler):

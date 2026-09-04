@@ -5,9 +5,9 @@ import asyncio
 from typing import Dict, Callable, Any, Awaitable
 from openai import AsyncOpenAI
 from tavily import AsyncTavilyClient
-from config import CONFIG
-from vector_store import KnowledgeBase
-from rag_chain import retrieve_chunks
+from backend.config import CONFIG
+from backend.core.vector_store import KnowledgeBase
+from backend.core.rag_chain import retrieve_chunks
 
 # ========== 初始化外部客户端（工具依赖） ==========
 # 注意：这里初始化是为了让工具函数能直接使用，但建议在函数内部按需调用

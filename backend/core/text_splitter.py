@@ -1,5 +1,5 @@
 import re
-from config import CONFIG
+from backend.config import CONFIG
 
 def split_by_fixed(text, chunk_size=500, overlap=100):
     """固定长度切分（带重叠）"""

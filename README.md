@@ -50,25 +50,45 @@
 用户输入
     |
     v
-app.py (Streamlit 前端)
+frontend/app.py (Streamlit 前端)
     |  HTTP 请求 (X-API-Key 鉴权)
     v
-main.py (FastAPI 后端)
+backend/main.py (FastAPI 后端)
     |
-    +-- /ask, /ask/stream ------> rag_chain.py (RAG 核心流程)
+    +-- /ask, /ask/stream ------> backend/core/rag_chain.py (RAG 核心流程)
     |       |                        |
-    |       +-> rewrite_query()       LLM 改写查询
+    |       +-> rewrite_query()       LLM 改写查询（结合多轮历史消解指代）
     |       +-> search_with_scores()  Chroma 向量检索
     |       +-> rerank()              BGE 精排
     |       +-> ask_with_context()    LLM 生成带引用的答案
     |
-    +-- /agent/react ------------> agent.py (LangGraph ReAct Agent)
+    +-- /agent/react ------------> backend/agent/agent.py (LangGraph ReAct Agent)
     |       |                        |
     |       +-> agent_node           调 LLM，判断是否要调用工具
     |       +-> tool_node            执行工具（知识库/搜索/计算器）
     |       +-> should_continue      判断是继续还是结束
     |
-    +-- /upload -----------------> document_loader.py + vector_store.py
+    +-- /upload -----------------> backend/core/document_loader.py + vector_store.py
+    |
+    +-- /sessions, /documents ---> backend/storage.py (SQLite) + vector_store.py
+```
+
+### 目录结构
+
+```
+rag-knowledge-base/
+├── backend/                  # 后端应用包
+│   ├── main.py               # FastAPI 入口（路由、SSE、鉴权）
+│   ├── config.py             # 配置（dataclass + 环境变量）
+│   ├── storage.py            # SQLite 会话持久化
+│   ├── core/                 # RAG 核心链路（加载→切分→向量化→检索→重排→生成）
+│   └── agent/                # LangGraph ReAct Agent 与工具
+├── frontend/
+│   └── app.py                # Streamlit 界面
+├── tests/                    # pytest 测试（67 个）
+├── scripts/                  # 评估与调试脚本
+├── data/                     # 本地文档（不入库）
+└── .github/workflows/ci.yml  # CI
 ```
 
 ---
@@ -127,10 +147,10 @@ cp .env.example .env   # 然后在 .env 中填入真实密钥
 
 ```bash
 # 终端 1：启动后端
-uvicorn main:app --reload
+uvicorn backend.main:app --reload
 
 # 终端 2：启动前端
-streamlit run app.py
+streamlit run frontend/app.py
 ```
 
 访问 `http://localhost:8501` 即可使用。
@@ -193,29 +213,29 @@ event: done      → 结束标记（{"session_id": "..."}，新建会话时返�
 
 | 文件 | 职责 | 关键知识点 |
 |------|------|-----------|
-| `config.py` | 所有配置参数集中管理（dataclass + 环境变量） | dataclass、os.getenv |
-| `document_loader.py` | 解析 PDF/TXT/DOCX，提取文本 | pypdf、python-docx、边界处理 |
-| `text_splitter.py` | 按固定长度 / 句子 / 段落切分文本 | chunk 策略、overlap 设计 |
-| `embedding_util.py` | 调硅基流动 API 生成向量 | httpx 异步请求、异常封装 |
-| `vector_store.py` | Chroma 封装（增删查 + 去重 + 阈值过滤） | 向量检索、余弦距离、asyncio.to_thread |
-| `reranker.py` | BGE-reranker 精排 + 优雅降级 | 两阶段检索模式 |
-| `rag_chain.py` | RAG 核心流程编排 + 分类重试策略 | 查询改写（支持多轮历史）、tenacity、流式输出 |
-| `storage.py` | SQLite 会话/消息持久化（多轮对话） | 标准库 sqlite3、会话 CRUD |
-| `tools.py` | Agent 工具（知识库、搜索、计算器）+ Function Schema | AST 安全求值、Function Calling |
-| `agent.py` | LangGraph ReAct Agent | 状态机 Node/Edge、reducer |
-| `main.py` | FastAPI 后端服务（路由 + 鉴权） | 依赖注入、异步路由 |
-| `app.py` | Streamlit 前端（上传 + 对话 + Agent 可视化） | session_state、SSE 渲染 |
-| `inspect_db.py` | 调试工具：查看知识库内容 | Chroma get() |
+| `backend/config.py` | 所有配置参数集中管理（dataclass + 环境变量） | dataclass、os.getenv |
+| `backend/core/document_loader.py` | 解析 PDF/TXT/DOCX，提取文本 | pypdf、python-docx、边界处理 |
+| `backend/core/text_splitter.py` | 按固定长度 / 句子 / 段落切分文本 | chunk 策略、overlap 设计 |
+| `backend/core/embedding_util.py` | 调硅基流动 API 生成向量 | httpx 异步请求、异常封装 |
+| `backend/core/vector_store.py` | Chroma 封装（增删查 + 去重 + 阈值过滤 + 文档管理） | 向量检索、余弦距离、asyncio.to_thread |
+| `backend/core/reranker.py` | BGE-reranker 精排 + 优雅降级 | 两阶段检索模式 |
+| `backend/core/rag_chain.py` | RAG 核心流程编排 + 分类重试策略 | 查询改写（支持多轮历史）、tenacity、流式输出 |
+| `backend/storage.py` | SQLite 会话/消息持久化（多轮对话） | 标准库 sqlite3、会话 CRUD |
+| `backend/agent/tools.py` | Agent 工具（知识库、搜索、计算器）+ Function Schema | AST 安全求值、Function Calling |
+| `backend/agent/agent.py` | LangGraph ReAct Agent | 状态机 Node/Edge、reducer |
+| `backend/main.py` | FastAPI 后端服务（路由 + 鉴权 + SSE） | 依赖注入、异步路由 |
+| `frontend/app.py` | Streamlit 前端（上传 + 对话 + 会话 + Agent 可视化） | session_state、SSE 解析 |
+| `scripts/inspect_db.py` | 调试工具：查看知识库内容 | Chroma get() |
 
 ### 评估与工具
 
 | 文件 | 职责 |
 |------|------|
-| `eval_rag.py` | 用 LLM-as-Judge 自动评估 RAG 回答质量 |
+| `scripts/eval_rag.py` | 用 LLM-as-Judge 自动评估 RAG 回答质量 |
 | `eval_questions.csv` | 评估测试集（12 道知识库内 + 4 道知识库外） |
-| `visualize_report.py` | 生成评估结果的 HTML 报告 |
+| `scripts/visualize_report.py` | 生成评估结果的 HTML 报告 |
 | `eval_report.html` | 评估报告（运行 visualize_report.py 后生成） |
-| `batch_upload.py` | 批量上传 `data/` 目录下所有文档 |
+| `scripts/batch_upload.py` | 批量上传 `data/` 目录下所有文档 |
 
 ---
 
@@ -232,9 +252,9 @@ event: done      → 结束标记（{"session_id": "..."}，新建会话时返�
 
 Chroma 的 Cosine 模式下返回的 dist 是余弦距离（`dist = 1 - cos_sim`），因此 `similarity = 1 - dist` 就是余弦相似度。collection 创建时通过 `metadata={"hnsw:space": "cosine"}` 显式声明距离度量。
 
-### 流式输出中的元数据协议
+### 流式输出中的元数据协议（真 SSE）
 
-流式 SSE 只有一个通道，无法同时传"正文"和"来源列表"。项目采用自定义协议：在流末尾追加 `__SOURCES__:{JSON}` 标记，前端检测该标记后分离正文与元数据。
+流式接口 `/ask/stream` 返回标准 `text/event-stream`，用三种事件分离"正文"与"来源"：先推 `sources`（检索/重排结果，含文件名元数据），再逐段推 `delta`（正文增量），最后以 `done`（携带 session_id）收尾。前端按事件类型分别渲染，不存在解析歧义。
 
 ### Agent 状态机的 reducer
 

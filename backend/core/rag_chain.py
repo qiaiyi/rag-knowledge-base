@@ -9,9 +9,9 @@ from tenacity import (
     RetryError
 )
 from dotenv import load_dotenv
-from vector_store import KnowledgeBase
-from reranker import rerank
-from config import CONFIG
+from backend.core.vector_store import KnowledgeBase
+from backend.core.reranker import rerank
+from backend.config import CONFIG
 
 load_dotenv()
 logger = logging.getLogger(__name__)

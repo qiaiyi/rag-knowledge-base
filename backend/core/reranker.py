@@ -2,7 +2,7 @@ import httpx
 import os
 import logging
 from dotenv import load_dotenv
-from config import CONFIG
+from backend.config import CONFIG
 
 load_dotenv()
 logger = logging.getLogger(__name__)

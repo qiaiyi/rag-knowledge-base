@@ -7,14 +7,14 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from document_loader import load_document
-from text_splitter import split_text
-from vector_store import KnowledgeBase
+from backend.core.document_loader import load_document
+from backend.core.text_splitter import split_text
+from backend.core.vector_store import KnowledgeBase
 from dotenv import load_dotenv
-from rag_chain import answer_question, stream_answer_with_context, retrieve_chunks_detailed
-from storage import ChatStore
-from config import CONFIG
-from agent import build_react_agent
+from backend.core.rag_chain import answer_question, stream_answer_with_context, retrieve_chunks_detailed
+from backend.storage import ChatStore
+from backend.config import CONFIG
+from backend.agent.agent import build_react_agent
 
 load_dotenv()
 

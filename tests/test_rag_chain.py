@@ -2,8 +2,8 @@ import asyncio
 
 import httpx
 
-import rag_chain
-from rag_chain import rewrite_query, retrieve_chunks, retrieve_chunks_detailed, answer_question
+from backend.core import rag_chain
+from backend.core.rag_chain import rewrite_query, retrieve_chunks, retrieve_chunks_detailed, answer_question
 
 
 def patch_llm(monkeypatch, response_text):

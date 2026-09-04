@@ -2,7 +2,7 @@ import uuid
 
 from fastapi.testclient import TestClient
 
-import main
+from backend import main
 
 
 client = TestClient(main.app)
@@ -72,7 +72,7 @@ class TestUploadAddsMetadata:
         import io
         from datetime import datetime
 
-        import vector_store
+        from backend.core import vector_store
 
         # mock 掉 embedding 生成，上传流程不访问外部 API
         async def fake_embedding(text):
