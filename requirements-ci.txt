@@ -13,6 +13,7 @@ tavily-python
 tenacity
 python-docx
 pypdf
+rank_bm25
 requests
 streamlit
 pytest
