@@ -80,7 +80,34 @@ async def rewrite_query(original_query, model=None, history=None):
     return rewritten
 
 
-# ============ 2. 非流式 LLM 生成答案（带重试） ============
+# ============ 2. 上下文预算截断 ============
+def _estimate_tokens(text):
+    """保守估算文本的 token 数：中文场景 1 字符 ≈ 1 token。
+    若需精确 token 可以换成 tiktoken.encode，但对实习项目此近似足够。"""
+    return len(text)
+
+
+def truncate_context(chunks, max_tokens):
+    """
+    按 token 预算从头部起截断检索上下文（保序，至少保留 1 条）。
+    因只丢弃尾部、不重排，保留片段仍与 hits 前 N 条一一对应，引用编号不失效。
+    :param chunks: 检索命中的文本内容列表
+    :param max_tokens: 允许的最大 token 数
+    :return: 截断后的文本列表
+    """
+    if max_tokens <= 0:
+        return chunks[:1] if chunks else []
+    budget = 0
+    kept = []
+    for chunk in chunks:
+        if kept and budget + _estimate_tokens(chunk) > max_tokens:
+            break  # 超预算即停，保证至少保留 1 条
+        budget += _estimate_tokens(chunk)
+        kept.append(chunk)
+    return kept
+
+
+# ============ 3. 非流式 LLM 生成答案（带重试） ============
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -92,6 +119,7 @@ async def ask_with_context(question, context_chunks, model=None):
     """
     if model is None:
         model = CONFIG.LLM_MODEL
+    context_chunks = truncate_context(context_chunks, CONFIG.MAX_CONTEXT_TOKENS)
 
     numbered_chunks = [f"[{i}] {chunk}" for i, chunk in enumerate(context_chunks, 1)]
     context_text = "\n\n".join(numbered_chunks)
@@ -126,6 +154,7 @@ async def stream_answer_with_context(question, context_chunks, model=None):
     """
     if model is None:
         model = CONFIG.LLM_MODEL
+    context_chunks = truncate_context(context_chunks, CONFIG.MAX_CONTEXT_TOKENS)
 
     numbered_chunks = [f"[{i}] {chunk}" for i, chunk in enumerate(context_chunks, 1)]
     context_text = "\n\n".join(numbered_chunks)

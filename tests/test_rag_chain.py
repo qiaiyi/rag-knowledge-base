@@ -3,7 +3,9 @@ import asyncio
 import httpx
 
 from backend.core import rag_chain
-from backend.core.rag_chain import rewrite_query, retrieve_chunks, retrieve_chunks_detailed, answer_question
+from backend.core.rag_chain import (
+    rewrite_query, retrieve_chunks, retrieve_chunks_detailed, answer_question, truncate_context,
+)
 
 
 def patch_llm(monkeypatch, response_text):
@@ -25,6 +27,25 @@ def patch_llm(monkeypatch, response_text):
     mock_client = CaptureClient(transport=transport)
     monkeypatch.setattr(rag_chain, "get_client", lambda: mock_client)
     return captured
+
+
+class TestTruncateContext:
+    def test_drops_tail_chunks_when_over_budget(self):
+        chunks = ["一" * 100] * 10          # 每条 100 token，预算 250 → 保留 2 条
+        kept = truncate_context(chunks, 250)
+        assert kept == chunks[:2]
+        # 保序且未改内容
+        assert kept[0] == "一" * 100
+
+    def test_keeps_at_least_one_when_first_chunk_over_budget(self):
+        chunks = ["一" * 500, "二" * 500]
+        kept = truncate_context(chunks, 50)
+        assert len(kept) == 1               # 至少保留 1 条，不被截成空
+        assert kept[0] == "一" * 500
+
+    def test_keeps_all_when_under_budget(self):
+        chunks = ["a" * 10, "b" * 10]
+        assert truncate_context(chunks, 1000) == chunks
 
 
 class TestRewriteWithHistory:

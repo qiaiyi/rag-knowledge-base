@@ -1,7 +1,7 @@
 import asyncio
 
 from backend.core import vector_store
-from backend.core.vector_store import KnowledgeBase
+from backend.core.vector_store import KnowledgeBase, _rrf_fuse
 
 
 def make_kb(name: str) -> KnowledgeBase:
@@ -86,3 +86,35 @@ class TestDedupShortCircuit:
         asyncio.run(kb.add_documents(chunks))
         assert len(calls) == before
         assert kb.collection.count() == 1
+
+
+class TestRRFFusion:
+    def test_merges_rankings_and_dedupes(self):
+        ranked_a = ["甲", "乙", "丙"]
+        ranked_b = ["丁", "甲"]
+        fused = _rrf_fuse([ranked_a, ranked_b])
+        # 两路去重后并集全部出现，无重复
+        assert len(fused) == len(set(fused))
+        assert set(fused) == {"甲", "乙", "丙", "丁"}
+        # 两路都命中的"甲"融合后排最前
+        assert fused[0] == "甲"
+
+
+class TestBM25KeywordRecall:
+    def test_captures_literal_term_that_vector_may_miss(self, monkeypatch):
+        """精确术语/编号是关键词召回的强项，验证 BM25 能把这类片段捞回来"""
+        kb = make_kb("bm25_test")
+
+        async def fake_embeddings(texts):
+            return [[0.1, 0.2] for _ in texts]
+
+        monkeypatch.setattr(vector_store, "get_embeddings", fake_embeddings)
+        asyncio.run(kb.add_documents([
+            "关于员工报销流程的说明文档",
+            "服务器 IP 地址为 192.168.1.100，请勿泄露",
+            "产品定价与优惠策略",
+        ]))
+
+        hits = kb._bm25_search("192.168.1.100", top_k=3)
+        contents = [h["content"] for h in hits]
+        assert contents[0] == "服务器 IP 地址为 192.168.1.100，请勿泄露"

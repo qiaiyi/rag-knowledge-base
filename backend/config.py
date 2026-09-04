@@ -30,11 +30,19 @@ class Config:
     RERANK_TOP_N: int = int(os.getenv("RERANK_TOP_N", "3"))
     USE_RERANK: bool = os.getenv("USE_RERANK", "True").lower() == "true"
     USE_QUERY_REWRITE: bool = os.getenv("USE_QUERY_REWRITE", "True").lower() == "true"
+    # 混合检索：向量召回 + 关键词(BM25)召回，用 RRF 融合以提高召回上界
+    USE_HYBRID: bool = os.getenv("USE_HYBRID", "True").lower() == "true"
+    HYBRID_TOP_K: int = int(os.getenv("HYBRID_TOP_K", "15"))  # 稠密/稀疏各自先召回数，最终仍由 RERANK_TOP_N 收敛
 
     # ---------- 超时与温度 ----------
     REQUEST_TIMEOUT: int = int(os.getenv("REQUEST_TIMEOUT", "30"))   # Embedding / Rerank 超时
     LLM_TIMEOUT: int = int(os.getenv("LLM_TIMEOUT", "60"))          # LLM 生成超时
     TEMPERATURE: float = float(os.getenv("TEMPERATURE", "0.3"))
+
+    # ---------- 上下文预算 ----------
+    # 喂给 LLM 的检索上下文最大 token 预算，避免检索结果过多时撞模型窗口。
+    # 注意：MAX_CONTEXT_TOKENS + MAX_TOKENS 应小于模型实际上下文长度。
+    MAX_CONTEXT_TOKENS: int = int(os.getenv("MAX_CONTEXT_TOKENS", "4000"))
 
     # ========== 新增：Agent 专用配置 ==========
     # LLM 输出最大 token 数（控制生成长度）
