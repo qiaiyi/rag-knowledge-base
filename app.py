@@ -20,6 +20,7 @@ UPLOAD_ENDPOINT = f"{API_URL}/upload"
 NONSTREAM_ENDPOINT = f"{API_URL}/ask"
 STREAM_ENDPOINT = f"{API_URL}/ask/stream"
 AGENT_ENDPOINT = f"{API_URL}/agent/react"
+SESSIONS_ENDPOINT = f"{API_URL}/sessions"
 
 
 # ---------- Helpers ----------
@@ -28,11 +29,54 @@ def highlight_citations(text: str) -> str:
     return re.sub(r'【\d+】', repl, text)
 
 
-def format_sources(sources: list[str], max_len: int = 300) -> list[str]:
-    return [
-        f"**[{i}]** {src[:max_len]}..." if len(src) > max_len else f"**[{i}]** {src}"
-        for i, src in enumerate(sources, 1)
-    ]
+def source_text(src) -> str:
+    """来源项可能是字符串（Agent 模式）或 {"content","source"} 字典（RAG 模式）"""
+    if isinstance(src, dict):
+        return src.get("content", "")
+    return src
+
+
+def source_origin(src) -> str | None:
+    return src.get("source") if isinstance(src, dict) else None
+
+
+def format_sources(sources: list, max_len: int = 300) -> list[str]:
+    items = []
+    for i, src in enumerate(sources, 1):
+        text = source_text(src)
+        short = text[:max_len] + ("..." if len(text) > max_len else "")
+        origin = source_origin(src)
+        line = f"**[{i}]** {short}"
+        if origin:
+            line += f"\n\n- 📄 文件：`{origin}`"
+        items.append(line)
+    return items
+
+
+def parse_sse_stream(resp):
+    """
+    解析标准 SSE 流（event: xxx / data: {json} 帧，空行分隔）
+    逐帧 yield (event, data)
+    """
+    buffer = ""
+    for chunk in resp.iter_content(chunk_size=None, decode_unicode=True):
+        if not chunk:
+            continue
+        buffer += chunk
+        while "\n\n" in buffer:
+            raw, buffer = buffer.split("\n\n", 1)
+            event, data_str = None, None
+            for line in raw.split("\n"):
+                if line.startswith("event: "):
+                    event = line[len("event: "):].strip()
+                elif line.startswith("data: "):
+                    data_str = line[len("data: "):]
+            if event is None or data_str is None:
+                continue
+            try:
+                yield event, json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
 
 
 def render_trajectory(trajectory: list[dict]):
@@ -61,6 +105,23 @@ def render_trajectory(trajectory: list[dict]):
             st.divider()
 
 
+def fetch_sessions() -> list[dict]:
+    try:
+        resp = requests.get(SESSIONS_ENDPOINT, headers=HEADERS, timeout=10)
+        resp.raise_for_status()
+        return resp.json().get("sessions", [])
+    except Exception:
+        return []
+
+
+def render_answer(answer: str, sources: list):
+    st.markdown(highlight_citations(answer), unsafe_allow_html=True)
+    if sources:
+        with st.expander("查看参考来源"):
+            for s in format_sources(sources):
+                st.markdown(s)
+
+
 # ---------- Page ----------
 st.set_page_config(page_title="个人知识库问答助手", layout="wide")
 st.title("个人知识库问答助手")
@@ -70,6 +131,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []   # list of {"role", "content", "sources", "trajectory"}
 if "upload_status" not in st.session_state:
     st.session_state.upload_status = None
+if "session_id" not in st.session_state:
+    st.session_state.session_id = None
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -100,10 +163,76 @@ with st.sidebar:
 
     st.divider()
     st.subheader("知识库状态")
-    if st.session_state.upload_status:
-        st.info(st.session_state.upload_status)
+    try:
+        docs_resp = requests.get(f"{API_URL}/documents", headers=HEADERS, timeout=10)
+        if docs_resp.status_code == 200:
+            docs = docs_resp.json().get("documents", [])
+            if docs:
+                for doc in docs:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.caption(f"📄 {doc['source']}（{doc['chunks']} 片段）")
+                    with col2:
+                        if st.button("删除", key=f"del_{doc['source']}", help="删除该文档全部片段"):
+                            del_resp = requests.delete(
+                                f"{API_URL}/documents/{doc['source']}",
+                                headers=HEADERS, timeout=30,
+                            )
+                            if del_resp.status_code == 200:
+                                st.toast("已删除")
+                                st.rerun()
+                            else:
+                                st.error(del_resp.json().get("detail", "删除失败"))
+            else:
+                st.caption("知识库为空，请上传文档建立索引。")
+        elif st.session_state.upload_status:
+            st.info(st.session_state.upload_status)
+    except Exception:
+        st.caption("后端未启动，无法获取知识库状态。")
+
+    st.divider()
+    st.subheader("对话历史")
+    if st.button("➕ 新建对话", use_container_width=True):
+        st.session_state.session_id = None
+        st.session_state.messages = []
+        st.rerun()
+
+    sessions = fetch_sessions()
+    if sessions:
+        options = {f"{s['title'] or '（无标题）'} · {s['created_at']}（{s['message_count']} 条）": s["id"]
+                   for s in sessions}
+        selected = st.selectbox("历史会话", list(options.keys()), index=None)
+        if selected and st.button("载入此会话", use_container_width=True):
+            try:
+                resp = requests.get(f"{SESSIONS_ENDPOINT}/{options[selected]}/messages",
+                                    headers=HEADERS, timeout=10)
+                if resp.status_code == 200:
+                    msgs = resp.json().get("messages", [])
+                    st.session_state.messages = [
+                        {"role": m["role"], "content": m["content"], "sources": m.get("sources", [])}
+                        for m in msgs
+                    ]
+                    st.session_state.session_id = options[selected]
+                    st.rerun()
+                else:
+                    st.error("会话不存在或已被删除")
+            except Exception as e:
+                st.error(f"载入失败：{e}")
+        if selected and st.button("🗑️ 删除此会话", use_container_width=True):
+            try:
+                resp = requests.delete(f"{SESSIONS_ENDPOINT}/{options[selected]}",
+                                       headers=HEADERS, timeout=10)
+                if resp.status_code == 200:
+                    if st.session_state.session_id == options[selected]:
+                        st.session_state.session_id = None
+                        st.session_state.messages = []
+                    st.rerun()
+                else:
+                    st.error("删除失败")
+            except Exception as e:
+                st.error(f"删除失败：{e}")
     else:
-        st.caption("尚未上传任何文档，请上传以建立索引。")
+        st.caption("暂无历史会话")
 
     st.divider()
     st.subheader("控制面板")
@@ -114,10 +243,6 @@ with st.sidebar:
     # Stream toggle — only relevant in standard mode
     use_stream = st.toggle("流式输出", value=True,
                            help="开启后答案将逐字显示（标准 RAG 模式）")
-
-    if st.button("清空对话历史", use_container_width=True):
-        st.session_state.messages = []
-        st.rerun()
 
 # ---------- Main chat area ----------
 st.header("智能问答")
@@ -130,15 +255,7 @@ for msg in st.session_state.messages:
         if msg["role"] == "user":
             st.markdown(msg["content"])
         else:
-            highlighted = highlight_citations(msg.get("content", ""))
-            st.markdown(highlighted, unsafe_allow_html=True)
-
-            sources = msg.get("sources", [])
-            if sources:
-                with st.expander("查看参考来源"):
-                    for s in format_sources(sources):
-                        st.markdown(s)
-
+            render_answer(msg.get("content", ""), msg.get("sources", []))
             trajectory = msg.get("trajectory", [])
             if trajectory:
                 render_trajectory(trajectory)
@@ -154,7 +271,7 @@ if question:
 
     with st.chat_message("assistant"):
         if use_agent:
-            # ===== Agent mode =====
+            # ===== Agent mode（不参与多轮会话） =====
             with st.spinner("Agent 正在思考并调用工具..."):
                 try:
                     resp = requests.post(
@@ -168,18 +285,13 @@ if question:
                     answer = data.get("answer", "")
                     trajectory = data.get("trajectory", [])
 
-                    # Extract plain-text snippets from tool results as sources
                     sources = [
                         step["content"][:200]
                         for step in trajectory
                         if step.get("role") == "tool" and step.get("content")
                     ]
 
-                    st.markdown(highlight_citations(answer), unsafe_allow_html=True)
-                    if sources:
-                        with st.expander("查看参考来源"):
-                            for s in format_sources(sources):
-                                st.markdown(s)
+                    render_answer(answer, sources)
                     if trajectory:
                         render_trajectory(trajectory)
 
@@ -198,12 +310,16 @@ if question:
                     st.error(f"发生错误：{e}")
         else:
             # ===== Standard RAG mode =====
+            params = {"question": question}
+            if st.session_state.session_id:
+                params["session_id"] = st.session_state.session_id
+
             if use_stream:
-                # --- Streaming ---
+                # --- Streaming（解析真 SSE 事件流） ---
                 try:
                     resp = requests.post(
                         STREAM_ENDPOINT,
-                        params={"question": question},
+                        params=params,
                         headers=HEADERS,
                         stream=True,
                         timeout=120,
@@ -211,38 +327,23 @@ if question:
                     resp.raise_for_status()
 
                     placeholder = st.empty()
-                    full_response = ""
+                    answer_text = ""
                     sources = []
 
-                    for chunk in resp.iter_content(chunk_size=None, decode_unicode=True):
-                        if not chunk:
-                            continue
-                        full_response += chunk
-                        if "__SOURCES__:" in full_response:
-                            parts = full_response.split("__SOURCES__:", 1)
-                            answer_text = parts[0]
-                            try:
-                                sources = json.loads(parts[1]) if len(parts) > 1 else []
-                            except json.JSONDecodeError:
-                                sources = []
-                            placeholder.markdown(highlight_citations(answer_text),
-                                                unsafe_allow_html=True)
-                        else:
-                            placeholder.markdown(f"{full_response}▌",
-                                                unsafe_allow_html=True)
+                    for event, data in parse_sse_stream(resp):
+                        if event == "sources":
+                            sources = data
+                        elif event == "delta":
+                            answer_text += data.get("text", "")
+                            placeholder.markdown(
+                                highlight_citations(answer_text) + "▌",
+                                unsafe_allow_html=True,
+                            )
+                        elif event == "done":
+                            if data.get("session_id"):
+                                st.session_state.session_id = data["session_id"]
 
-                    if "__SOURCES__:" in full_response:
-                        answer_text = full_response.split("__SOURCES__:", 1)[0]
-                    else:
-                        answer_text = full_response
-
-                    placeholder.markdown(highlight_citations(answer_text),
-                                        unsafe_allow_html=True)
-
-                    if sources:
-                        with st.expander("查看参考来源"):
-                            for s in format_sources(sources):
-                                st.markdown(s)
+                    render_answer(answer_text, sources)
 
                     st.session_state.messages.append({
                         "role": "assistant",
@@ -263,7 +364,7 @@ if question:
                     try:
                         resp = requests.post(
                             NONSTREAM_ENDPOINT,
-                            params={"question": question},
+                            params=params,
                             headers=HEADERS,
                             timeout=90,
                         )
@@ -271,12 +372,10 @@ if question:
                         data = resp.json()
                         answer = data.get("answer", "")
                         sources = data.get("sources", [])
+                        if data.get("session_id"):
+                            st.session_state.session_id = data["session_id"]
 
-                        st.markdown(highlight_citations(answer), unsafe_allow_html=True)
-                        if sources:
-                            with st.expander("查看参考来源"):
-                                for s in format_sources(sources):
-                                    st.markdown(s)
+                        render_answer(answer, sources)
 
                         st.session_state.messages.append({
                             "role": "assistant",
@@ -295,4 +394,4 @@ if question:
     st.rerun()
 
 st.divider()
-st.caption("提示：答案中的【数字】对应参考来源编号。Agent 模式下可自动调用知识库检索、网络搜索等工具。")
+st.caption("提示：答案中的【数字】对应参考来源编号。标准模式支持多轮追问（如“它的作用是什么”），会话自动保存，可在左侧切换。Agent 模式下可自动调用知识库检索、网络搜索等工具。")

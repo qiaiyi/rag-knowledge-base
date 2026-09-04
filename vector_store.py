@@ -93,28 +93,67 @@ class KnowledgeBase:
 
     async def search_with_scores(self, query, top_k=5, score_threshold=0.5):
         """
-        异步检索并返回文档内容和相似度分数（经过阈值过滤）
+        异步检索并返回文档内容、相似度分数和来源元数据（经过阈值过滤）
         :param query: 查询文本
         :param top_k: 初检返回的最大数量
         :param score_threshold: 相似度阈值（0~1），低于该值的片段将被过滤
-        :return: 列表，每个元素为 (document, similarity_score)
+        :return: 列表，每个元素为 {"content", "score", "source"}
         """
         query_embedding = await get_embedding(query)
         results = await asyncio.to_thread(
             self.collection.query,
             query_embeddings=[query_embedding],
             n_results=top_k,
-            include=["documents", "distances"]
+            include=["documents", "distances", "metadatas"]
         )
         documents = results["documents"][0]
         distances = results["distances"][0]
-        
-        filtered = []
-        for doc, dist in zip(documents, distances):
+        metadatas = results["metadatas"][0]
+
+        hits = []
+        for doc, dist, meta in zip(documents, distances, metadatas):
             # Chroma 余弦距离：dist = 1 - cos_sim，范围 [0, 2]
             # 因此 similarity = 1 - dist = cos_sim，范围 [-1, 1]
             # （embedding 模型输出的向量通常非负，实际范围在 [0, 1]）
             similarity = 1 - dist
             if similarity >= score_threshold:
-                filtered.append((doc, similarity))
-        return filtered
+                hits.append({
+                    "content": doc,
+                    "score": similarity,
+                    "source": (meta or {}).get("source"),
+                })
+        return hits
+
+    async def list_documents(self):
+        """列出知识库中所有文档（按 source 聚合，返回文件名、片段数、最近上传时间）"""
+        results = await asyncio.to_thread(
+            self.collection.get, include=["metadatas"]
+        )
+        stats = {}
+        for meta in results["metadatas"]:
+            meta = meta or {}
+            name = meta.get("source", "未知来源")
+            entry = stats.setdefault(
+                name, {"source": name, "chunks": 0, "uploaded_at": None}
+            )
+            entry["chunks"] += 1
+            uploaded_at = meta.get("uploaded_at")
+            if uploaded_at and (not entry["uploaded_at"] or uploaded_at > entry["uploaded_at"]):
+                entry["uploaded_at"] = uploaded_at
+        return sorted(stats.values(), key=lambda d: d["source"])
+
+    async def delete_document(self, source):
+        """
+        删除指定来源文档的全部片段
+        :param source: 上传时的文件名（metadata 中的 source 字段）
+        :return: 实际删除的片段数；文档不存在时返回 0
+        """
+        existing = await asyncio.to_thread(
+            self.collection.get, where={"source": source}
+        )
+        ids = existing["ids"]
+        if not ids:
+            return 0
+        await asyncio.to_thread(self.collection.delete, ids=ids)
+        logger.info(f"删除文档 '{source}' 的 {len(ids)} 个片段")
+        return len(ids)

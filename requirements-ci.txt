@@ -1,0 +1,18 @@
+# 项目直接依赖（CI 与测试环境用）。
+# 注意：requirements.txt 是本地 pip freeze 的全量快照，体积过大不适合 CI；
+# 新环境建议优先使用本文件安装。
+fastapi
+uvicorn
+httpx
+pydantic
+python-dotenv
+chromadb
+openai
+langgraph
+tavily-python
+tenacity
+python-docx
+pypdf
+requests
+streamlit
+pytest

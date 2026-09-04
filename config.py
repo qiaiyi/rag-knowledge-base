@@ -60,6 +60,9 @@ class Config:
     # API 重试次数（针对网络抖动）
     MAX_RETRIES: int = int(os.getenv("MAX_RETRIES", "2"))
 
+    # 多轮对话：检索改写时携带的最近消息条数
+    HISTORY_MAX_MESSAGES: int = int(os.getenv("HISTORY_MAX_MESSAGES", "6"))
+
     # ---------- Prompt 模板（保留原有 RAG 模板，新增 Agent 模板可选） ----------
     RAG_PROMPT_TEMPLATE: str = os.getenv(
         "RAG_PROMPT_TEMPLATE",

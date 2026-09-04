@@ -2,7 +2,11 @@ venv/
 .env
 __pycache__/
 *.pyc
+.pytest_cache/
 chroma_data/
 data/
 *.csv
 *.html
+*.db
+*.db-wal
+*.db-shm

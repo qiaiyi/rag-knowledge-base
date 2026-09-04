@@ -1,5 +1,7 @@
 ﻿# RAG 个人知识库问答助手
 
+[![CI](https://github.com/qiaiyi/rag-knowledge-base/actions/workflows/ci.yml/badge.svg)](https://github.com/qiaiyi/rag-knowledge-base/actions/workflows/ci.yml)
+
 基于 RAG（检索增强生成）技术的智能问答系统。支持上传 PDF / DOCX / TXT 文档，自动建立向量索引；内置查询改写、重排序、Agent 推理等进阶能力。
 
 ---
@@ -34,7 +36,9 @@
 - **查询改写**：让 LLM 将口语化问题转为规范的检索查询
 - **相似度阈值过滤**：自动丢弃低相关片段
 - **强制引用与防幻觉**：答案标注来源【数字】，无相关信息时明确拒答
-- **流式输出**：SSE 逐字推送，前端打字机效果
+- **流式输出**：标准 SSE 事件流（sources/delta/done），前端打字机效果
+- **多轮对话**：会话持久化（SQLite），查询改写自动消解指代追问
+- **文档管理**：知识库文档列表与删除，支持"先删后传"更新文档
 - **Agent 推理轨迹可视化**：在界面上展示 Agent 的思考与工具调用过程
 - **自动评估**：LLM-as-Judge 对系统回答打分，生成评估报告
 
@@ -112,25 +116,11 @@ python -m venv venv
 # Windows: venv\Scripts\activate
 # Mac/Linux: source venv/bin/activate
 
-# 3. 安装依赖
-pip install -r requirements.txt
+# 3. 安装依赖（推荐使用精简依赖清单，requirements.txt 为全量快照）
+pip install -r requirements-ci.txt
 
 # 4. 配置环境变量
-# 复制以下内容到 .env 文件：
-#
-# # DeepSeek API（主 LLM）
-# API_KEY=你的DeepSeekAPI密钥
-# BASE_URL=https://ark.cn-beijing.volces.com/api/v3
-#
-# # 硅基流动（Embedding + Rerank）
-# SF_API_KEY=你的硅基流动密钥
-# SF_BASE_URL=https://api.siliconflow.cn/v1
-#
-# # 管理员密钥（API 访问鉴权）
-# ADMIN_API_KEY=自定义一个密码
-#
-# # Tavily 搜索（Agent 联网搜索）
-# TAVILY_API_KEY=你的Tavily密钥
+cp .env.example .env   # 然后在 .env 中填入真实密钥
 ```
 
 ### 启动
@@ -145,6 +135,14 @@ streamlit run app.py
 
 访问 `http://localhost:8501` 即可使用。
 
+### 运行测试
+
+```bash
+pytest -v
+```
+
+测试使用内存版向量库和占位密钥，不访问外部 API、不落盘。CI 会在每次 push / PR 时自动运行（见 `.github/workflows/ci.yml`）。
+
 ---
 
 ## API 接口
@@ -156,9 +154,28 @@ streamlit run app.py
 | `/` | GET | 根路径，健康检查（免鉴权） |
 | `/health` | GET | 健康检查（免鉴权） |
 | `/upload` | POST | 上传文档（PDF/TXT/DOCX），自动解析并建索引 |
-| `/ask` | POST | 标准 RAG 问答（非流式），返回 `{answer, sources}` |
-| `/ask/stream` | POST | 标准 RAG 问答（流式），SSE 逐字推送 |
+| `/documents` | GET | 列出知识库文档（文件名、片段数、上传时间） |
+| `/documents/{filename}` | DELETE | 删除指定文档的全部向量片段（重新上传前先删除即可更新文档） |
+| `/ask` | POST | 标准 RAG 问答（非流式），支持 `session_id` 多轮对话 |
+| `/ask/stream` | POST | 标准 RAG 问答，**标准 SSE 流**（`sources`/`delta`/`done` 三种事件） |
+| `/sessions` | GET | 列出历史会话 |
+| `/sessions/{id}/messages` | GET | 查看会话消息历史 |
+| `/sessions/{id}` | DELETE | 删除会话 |
 | `/agent/react` | POST | Agent 模式问答，返回 `{answer, trajectory}` |
+
+### 流式协议（SSE）
+
+`/ask/stream` 输出标准 `text/event-stream`，三种事件按序推送：
+
+```
+event: sources   → 检索/重排完成后先下发引用（含 content/score/source 文件名元数据）
+event: delta     → 正文增量（{"text": "..."}），可多次
+event: done      → 结束标记（{"session_id": "..."}，新建会话时返回给前端绑定）
+```
+
+### 多轮对话
+
+`/ask` 与 `/ask/stream` 接受可选 `session_id` 参数：传入时结合该会话最近 `HISTORY_MAX_MESSAGES` 条消息做**查询改写**（自动消解"它的作用是什么"这类指代追问）；不传时自动新建会话并在响应/`done` 事件中返回。会话与消息持久化在 SQLite（`CHAT_DB_PATH`，默认 `./chat_history.db`）。
 
 ---
 
@@ -182,7 +199,8 @@ streamlit run app.py
 | `embedding_util.py` | 调硅基流动 API 生成向量 | httpx 异步请求、异常封装 |
 | `vector_store.py` | Chroma 封装（增删查 + 去重 + 阈值过滤） | 向量检索、余弦距离、asyncio.to_thread |
 | `reranker.py` | BGE-reranker 精排 + 优雅降级 | 两阶段检索模式 |
-| `rag_chain.py` | RAG 核心流程编排 + 分类重试策略 | 查询改写、tenacity、流式输出 |
+| `rag_chain.py` | RAG 核心流程编排 + 分类重试策略 | 查询改写（支持多轮历史）、tenacity、流式输出 |
+| `storage.py` | SQLite 会话/消息持久化（多轮对话） | 标准库 sqlite3、会话 CRUD |
 | `tools.py` | Agent 工具（知识库、搜索、计算器）+ Function Schema | AST 安全求值、Function Calling |
 | `agent.py` | LangGraph ReAct Agent | 状态机 Node/Edge、reducer |
 | `main.py` | FastAPI 后端服务（路由 + 鉴权） | 依赖注入、异步路由 |
