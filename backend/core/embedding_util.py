@@ -3,9 +3,13 @@ import os
 from dotenv import load_dotenv
 import logging
 from backend.config import CONFIG
+from backend.core.http_client import get_client
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# 单次批量请求的最大文本数（硅基流动 /embeddings 对 batch 大小有上限，保守取 64）
+EMBEDDING_BATCH_SIZE = 64
 
 
 class EmbeddingError(Exception):
@@ -13,15 +17,17 @@ class EmbeddingError(Exception):
     pass
 
 
-async def get_embedding(text):
+async def get_embeddings(texts):
     """
-    异步调用硅基流动 embedding API 获取向量
-    :param text: 输入文本
-    :return: 向量列表
-    :raises EmbeddingError: API 调用失败或响应解析失败时抛出
-    :raises ValueError: 输入文本为空时抛出
+    异步批量调用硅基流动 embedding API，按输入顺序返回向量列表
+    :param texts: 文本列表（非空）
+    :return: 向量列表，与 texts 一一对应
+    :raises EmbeddingError: API 调用失败、响应解析失败或数量不匹配时抛出
+    :raises ValueError: 输入为空时抛出
     """
-    if not text or not text.strip():
+    if not texts:
+        raise ValueError("输入文本列表为空，无法生成向量")
+    if any(not t or not t.strip() for t in texts):
         raise ValueError("输入文本为空，无法生成向量")
 
     url = f"{CONFIG.SF_BASE_URL}/embeddings"
@@ -31,20 +37,31 @@ async def get_embedding(text):
     }
     payload = {
         "model": CONFIG.EMBEDDING_MODEL,
-        "input": text
+        "input": texts
     }
 
     try:
-        async with httpx.AsyncClient(timeout=CONFIG.REQUEST_TIMEOUT) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+        client = get_client()
+        resp = await client.post(url, json=payload, headers=headers, timeout=CONFIG.REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
 
-            # 校验返回结构是否完整（防御性编程）
-            if not data.get("data") or not data["data"][0].get("embedding"):
+        # 校验返回结构是否完整（防御性编程）
+        if not data.get("data"):
+            raise EmbeddingError("API 返回数据结构异常，缺少 embedding 字段")
+
+        embeddings = [None] * len(texts)
+        for item in data["data"]:
+            embedding = item.get("embedding")
+            if not embedding:
                 raise EmbeddingError("API 返回数据结构异常，缺少 embedding 字段")
+            embeddings[item["index"]] = embedding
 
-            return data["data"][0]["embedding"]
+        actual = len([e for e in embeddings if e is not None])
+        if actual != len(texts):
+            raise EmbeddingError(f"API 返回向量数量不匹配: 期望 {len(texts)} 条，实际 {actual} 条")
+
+        return embeddings
 
     except httpx.TimeoutException as e:
         logger.error(f"Embedding API 请求超时: {e}")
@@ -58,3 +75,8 @@ async def get_embedding(text):
     except (KeyError, IndexError, ValueError) as e:
         logger.error(f"Embedding 响应解析失败: {e}")
         raise EmbeddingError(f"Embedding 响应格式异常: {e}") from e
+
+
+async def get_embedding(text):
+    """单条文本向量生成（批量接口的便捷封装）"""
+    return (await get_embeddings([text]))[0]

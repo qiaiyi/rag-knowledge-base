@@ -7,7 +7,7 @@ from backend.core.rag_chain import rewrite_query, retrieve_chunks, retrieve_chun
 
 
 def patch_llm(monkeypatch, response_text):
-    """把 rag_chain 内部创建的 httpx.AsyncClient 换成 MockTransport 版本，并捕获请求体"""
+    """把 rag_chain 使用的共享客户端（get_client）替换为 MockTransport 版本，并捕获请求体"""
     captured = {}
     transport = httpx.MockTransport(
         lambda request: httpx.Response(
@@ -15,21 +15,15 @@ def patch_llm(monkeypatch, response_text):
             json={"choices": [{"message": {"content": response_text}}]},
         )
     )
-    real_client = httpx.AsyncClient
 
-    def factory(*args, **kwargs):
-        captured["url"] = str(kwargs.get("base_url", "")) or True
+    class CaptureClient(httpx.AsyncClient):
+        async def post(self, url, **kw):
+            captured["url"] = str(url)
+            captured["payload"] = kw.get("json")
+            return await super().post(url, **kw)
 
-        class CaptureClient(real_client):
-            async def post(self, url, **kw):
-                captured["url"] = str(url)
-                captured["payload"] = kw.get("json")
-                return await super().post(url, **kw)
-
-        kwargs["transport"] = transport
-        return CaptureClient(*args, **kwargs)
-
-    monkeypatch.setattr(rag_chain.httpx, "AsyncClient", factory)
+    mock_client = CaptureClient(transport=transport)
+    monkeypatch.setattr(rag_chain, "get_client", lambda: mock_client)
     return captured
 
 

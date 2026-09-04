@@ -11,6 +11,7 @@ from tenacity import (
 from dotenv import load_dotenv
 from backend.core.vector_store import KnowledgeBase
 from backend.core.reranker import rerank
+from backend.core.http_client import get_client
 from backend.config import CONFIG
 
 load_dotenv()
@@ -72,11 +73,11 @@ async def rewrite_query(original_query, model=None, history=None):
         "temperature": CONFIG.TEMPERATURE
     }
     
-    async with httpx.AsyncClient(timeout=CONFIG.REQUEST_TIMEOUT) as client:
-        resp = await client.post(f"{CONFIG.BASE_URL}/chat/completions", json=payload, headers=headers)
-        resp.raise_for_status()
-        rewritten = resp.json()["choices"][0]["message"]["content"].strip()
-        return rewritten
+    client = get_client()
+    resp = await client.post(f"{CONFIG.BASE_URL}/chat/completions", json=payload, headers=headers, timeout=CONFIG.REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    rewritten = resp.json()["choices"][0]["message"]["content"].strip()
+    return rewritten
 
 
 # ============ 2. 非流式 LLM 生成答案（带重试） ============
@@ -106,13 +107,13 @@ async def ask_with_context(question, context_chunks, model=None):
         "temperature": CONFIG.TEMPERATURE
     }
     
-    async with httpx.AsyncClient(timeout=CONFIG.LLM_TIMEOUT) as client:
-        resp = await client.post(f"{CONFIG.BASE_URL}/chat/completions", json=payload, headers=headers)
-        resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+    client = get_client()
+    resp = await client.post(f"{CONFIG.BASE_URL}/chat/completions", json=payload, headers=headers, timeout=CONFIG.LLM_TIMEOUT)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
 
 
-# ============ 3. 流式 LLM 生成答案（带重试 + 末尾附加来源标记） ============
+# ============ 3. 流式 LLM 生成答案（带重试，产出正文增量） ============
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=10),
@@ -138,24 +139,24 @@ async def stream_answer_with_context(question, context_chunks, model=None):
         "stream": True
     }
 
-    async with httpx.AsyncClient(timeout=CONFIG.LLM_TIMEOUT) as client:
-        async with client.stream("POST", f"{CONFIG.BASE_URL}/chat/completions", json=payload, headers=headers) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line:
+    client = get_client()
+    async with client.stream("POST", f"{CONFIG.BASE_URL}/chat/completions", json=payload, headers=headers, timeout=CONFIG.LLM_TIMEOUT) as response:
+        response.raise_for_status()
+        async for line in response.aiter_lines():
+            if not line:
+                continue
+            if line.startswith('data: '):
+                data_str = line[6:]
+                if data_str == '[DONE]':
+                    break
+                try:
+                    chunk_data = json.loads(data_str)
+                    delta = chunk_data['choices'][0].get('delta', {})
+                    content = delta.get('content', '')
+                    if content:
+                        yield content
+                except json.JSONDecodeError:
                     continue
-                if line.startswith('data: '):
-                    data_str = line[6:]
-                    if data_str == '[DONE]':
-                        break
-                    try:
-                        chunk_data = json.loads(data_str)
-                        delta = chunk_data['choices'][0].get('delta', {})
-                        content = delta.get('content', '')
-                        if content:
-                            yield content
-                    except json.JSONDecodeError:
-                        continue
 
 
 # ============ 4. 统一检索入口（纯逻辑，无重试，内部调用可重试函数） ============

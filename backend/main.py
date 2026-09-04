@@ -2,6 +2,7 @@
 import os
 import json
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,6 +13,7 @@ from backend.core.text_splitter import split_text
 from backend.core.vector_store import KnowledgeBase
 from dotenv import load_dotenv
 from backend.core.rag_chain import answer_question, stream_answer_with_context, retrieve_chunks_detailed
+from backend.core.http_client import close_client
 from backend.storage import ChatStore
 from backend.config import CONFIG
 from backend.agent.agent import build_react_agent
@@ -33,7 +35,13 @@ async def validate_api_key(api_key: str = Header(..., alias="X-API-Key")):
         raise HTTPException(status_code=403, detail="无效的 API Key，拒绝访问")
     return api_key
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app):
+    # 应用关闭时释放共享 httpx 连接池
+    yield
+    await close_client()
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

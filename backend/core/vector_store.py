@@ -2,7 +2,7 @@ import asyncio
 import chromadb
 import hashlib
 import logging
-from backend.core.embedding_util import get_embedding, EmbeddingError
+from backend.core.embedding_util import get_embedding, get_embeddings, EMBEDDING_BATCH_SIZE, EmbeddingError
 
 logger = logging.getLogger(__name__)
 
@@ -26,44 +26,45 @@ class KnowledgeBase:
 
     async def add_documents(self, chunks, metadatas=None):
         """
-        异步将文档块存入向量库（自动去重）
+        异步将文档块存入向量库（自动去重 + 批量向量化）
         :param chunks: 文本块列表
         :param metadatas: 元数据列表
         """
-        ids = []
-        new_chunks = []
-        new_metadatas = []
-        
-        for i, chunk in enumerate(chunks):
-            content_hash = hashlib.md5(chunk.encode('utf-8')).hexdigest()
-            # 包装同步 get 操作
-            existing = await asyncio.to_thread(self.collection.get, ids=[content_hash])
-            if not existing['ids']:
-                ids.append(content_hash)
+        # 1. 去重：一次性查出所有候选 id，避免逐条 get 的 N+1 问题
+        ids = [hashlib.md5(chunk.encode('utf-8')).hexdigest() for chunk in chunks]
+        existing = await asyncio.to_thread(self.collection.get, ids=ids)
+        existing_ids = set(existing["ids"])
+
+        new_ids, new_chunks, new_metadatas = [], [], []
+        for i, (cid, chunk) in enumerate(zip(ids, chunks)):
+            if cid not in existing_ids:
+                new_ids.append(cid)
                 new_chunks.append(chunk)
-                new_metadatas.append(metadatas[i] if metadatas else {})
-        
-        if ids:
-            try:
-                # 异步逐条生成向量（列表推导式不支持 await，需显式循环）
-                embeddings = []
-                for chunk in new_chunks:
-                    embedding = await get_embedding(chunk)
-                    embeddings.append(embedding)
-            except EmbeddingError as e:
-                raise RuntimeError(f"生成向量失败: {e}") from e
-            
-            # 包装同步 add 操作
-            await asyncio.to_thread(
-                self.collection.add,
-                embeddings=embeddings,
-                documents=new_chunks,
-                ids=ids,
-                metadatas=new_metadatas
-            )
-            logger.info(f"成功添加 {len(ids)} 个新文档块（跳过 {len(chunks) - len(ids)} 个重复块）")
-        else:
-            logger.info("所有文档块均已存在，无需添加")
+                # chromadb 拒绝空 dict 元数据，无元数据时用 None 占位
+                new_metadatas.append(metadatas[i] if metadatas else None)
+
+        if not new_ids:
+            logger.info(f"所有文档块均已存在，无需添加（共 {len(chunks)} 块）")
+            return
+
+        # 2. 批量生成向量（按 EMBEDDING_BATCH_SIZE 分批请求）
+        try:
+            embeddings = []
+            for start in range(0, len(new_chunks), EMBEDDING_BATCH_SIZE):
+                batch = new_chunks[start:start + EMBEDDING_BATCH_SIZE]
+                embeddings.extend(await get_embeddings(batch))
+        except EmbeddingError as e:
+            raise RuntimeError(f"生成向量失败: {e}") from e
+
+        # 3. 包装同步 add 操作
+        await asyncio.to_thread(
+            self.collection.add,
+            embeddings=embeddings,
+            documents=new_chunks,
+            ids=new_ids,
+            metadatas=new_metadatas
+        )
+        logger.info(f"成功添加 {len(new_ids)} 个新文档块（跳过 {len(chunks) - len(new_ids)} 个重复块）")
 
     async def search(self, query, top_k=3):
         """

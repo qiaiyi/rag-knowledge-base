@@ -74,11 +74,11 @@ class TestUploadAddsMetadata:
 
         from backend.core import vector_store
 
-        # mock 掉 embedding 生成，上传流程不访问外部 API
-        async def fake_embedding(text):
-            return [0.1, 0.2]
+        # mock 掉批量 embedding 生成，上传流程不访问外部 API
+        async def fake_embeddings(texts):
+            return [[0.1, 0.2] for _ in texts]
 
-        monkeypatch.setattr(vector_store, "get_embedding", fake_embedding)
+        monkeypatch.setattr(vector_store, "get_embeddings", fake_embeddings)
 
         files = {"file": ("元数据测试.txt", io.BytesIO("测试内容".encode("utf-8")), "text/plain")}
         r = client.post("/upload", headers=AUTH, files=files)

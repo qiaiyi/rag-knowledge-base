@@ -3,6 +3,7 @@ import os
 import logging
 from dotenv import load_dotenv
 from backend.config import CONFIG
+from backend.core.http_client import get_client
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -31,13 +32,13 @@ async def rerank(query, documents, top_n=3):
         "top_n": top_n
     }
     try:
-        async with httpx.AsyncClient(timeout=CONFIG.REQUEST_TIMEOUT) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            sorted_results = sorted(data["results"], key=lambda x: x["relevance_score"], reverse=True)
-            ranked_docs = [documents[item["index"]] for item in sorted_results]
-            return ranked_docs[:top_n]
+        client = get_client()
+        resp = await client.post(url, json=payload, headers=headers, timeout=CONFIG.REQUEST_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        sorted_results = sorted(data["results"], key=lambda x: x["relevance_score"], reverse=True)
+        ranked_docs = [documents[item["index"]] for item in sorted_results]
+        return ranked_docs[:top_n]
     except httpx.TimeoutException as e:
         logger.warning(f"Rerank 请求超时，降级至原始向量检索结果: {e}")
         return documents[:top_n]
