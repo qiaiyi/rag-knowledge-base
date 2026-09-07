@@ -135,32 +135,6 @@ class KnowledgeBase:
             for i in top if scores[i] > 0
         ]
 
-    async def search(self, query, top_k=3):
-        """
-        异步检索与查询最相关的 top_k 个文档块
-        :param query: 用户问题字符串
-        :param top_k: 返回的最大结果数
-        :return: 文档内容列表（按相关度降序）
-        """
-        query_embedding = await get_embedding(query)
-        results = await asyncio.to_thread(
-            self.collection.query,
-            query_embeddings=[query_embedding],
-            n_results=top_k
-        )
-        return results["documents"][0] if results["documents"] else []
-
-    async def search_with_details(self, query, top_k=3):
-        """异步返回详细信息（包括内容、距离、元数据）"""
-        query_embedding = await get_embedding(query)
-        results = await asyncio.to_thread(
-            self.collection.query,
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "distances", "metadatas"]
-        )
-        return results
-
     async def search_with_scores(self, query, top_k=5, score_threshold=0.5):
         """
         异步检索并返回文档内容、相似度分数和来源元数据（经过阈值过滤）。

@@ -1,4 +1,3 @@
-# main.py
 import os
 import json
 import logging
@@ -8,6 +7,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from langchain_core.messages import HumanMessage
 from backend.core.document_loader import load_document
 from backend.core.text_splitter import split_text
 from backend.core.vector_store import KnowledgeBase
@@ -173,7 +173,7 @@ async def ask(question: str, session_id: str = None):
     return {"answer": answer, "sources": sources, "session_id": session_id}
 
 
-# ========== 流式问答（真 SSE：sources / delta / done 三种事件） ==========
+# ========== 流式问答（SSE：sources / delta / done 三种事件） ==========
 @app.post("/ask/stream", dependencies=[Depends(validate_api_key)])
 async def ask_stream(question: str, session_id: str = None):
     if not question or question.strip() == "":
@@ -241,22 +241,31 @@ async def agent_react_endpoint(query: AgentQuery):
         config = {"recursion_limit": CONFIG.AGENT_RECURSION_LIMIT}
 
         result = await react_agent.ainvoke(
-            {"messages": [{"role": "user", "content": query.question}]},
+            {"messages": [HumanMessage(content=query.question)]},
             config=config
         )
 
         final_msg = result["messages"][-1]
-        answer = final_msg.get("content", "处理完成，但未生成回答。")
+        answer = final_msg.content or "处理完成，但未生成回答。"
 
         # 提取推理轨迹（便于调试和前端展示）
-        trajectory = [
-            {
-                "role": m.get("role"),
-                "content": m.get("content", ""),
-                "tool_calls": m.get("tool_calls")
-            }
-            for m in result["messages"]
-        ]
+        trajectory = []
+        for m in result["messages"]:
+            row = {"role": m.type, "content": m.content}
+            tool_calls = getattr(m, "tool_calls", None) or []
+            if tool_calls:
+                row["tool_calls"] = [
+                    {
+                        "id": tc.get("id"),
+                        "type": "function",
+                        "function": {
+                            "name": tc.get("name"),
+                            "arguments": tc.get("args", ""),
+                        },
+                    }
+                    for tc in tool_calls
+                ]
+            trajectory.append(row)
 
         return {
             "question": query.question,

@@ -9,6 +9,8 @@ python-dotenv
 chromadb
 openai
 langgraph
+langchain
+langchain-openai
 tavily-python
 tenacity
 python-docx

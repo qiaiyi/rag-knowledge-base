@@ -1,44 +1,46 @@
-import json
 import ast
 import operator
-import asyncio
-from typing import Dict, Callable, Any, Awaitable
-from openai import AsyncOpenAI
+
+from langchain_core.tools import tool
 from tavily import AsyncTavilyClient
+
 from backend.config import CONFIG
 from backend.core.vector_store import KnowledgeBase
 from backend.core.rag_chain import retrieve_chunks
 
 # ========== 初始化外部客户端（工具依赖） ==========
-# 注意：这里初始化是为了让工具函数能直接使用，但建议在函数内部按需调用
 _tavily_client = AsyncTavilyClient(api_key=CONFIG.TAVILY_API_KEY)
 
 
-# ========== 1. 工具函数实现 ==========
-async def retrieve_kb(query: str, kb: KnowledgeBase) -> str:
-    """从内部知识库检索相关文档片段（异步）"""
-    try:
-        chunks = await retrieve_chunks(
-            query, kb,
-            top_k=CONFIG.TOP_K,
-            score_threshold=CONFIG.SCORE_THRESHOLD,
-            use_rerank=CONFIG.USE_RERANK,
-            rerank_top_n=CONFIG.RERANK_TOP_N,
-            use_query_rewrite=CONFIG.USE_QUERY_REWRITE
-        )
-        if not chunks:
-            return "知识库中未找到相关信息。"
-        return "\n\n".join(chunks)
-    except Exception as e:
-        return f"知识库检索失败: {e}"
+# ========== 工具 1：知识库检索（kb 通过闭包注入，不暴露给模型） ==========
+def make_retrieve_kb(kb: KnowledgeBase):
+    """为指定知识库生成检索工具。模型只看到 query 参数，kb 自动绑定。"""
+
+    @tool
+    async def retrieve_kb(query: str) -> str:
+        """从公司内部知识库检索文档片段（适用于制度、产品手册、内部FAQ）。"""
+        try:
+            chunks = await retrieve_chunks(
+                query, kb,
+                top_k=CONFIG.TOP_K,
+                score_threshold=CONFIG.SCORE_THRESHOLD,
+                use_rerank=CONFIG.USE_RERANK,
+                rerank_top_n=CONFIG.RERANK_TOP_N,
+                use_query_rewrite=CONFIG.USE_QUERY_REWRITE,
+            )
+            if not chunks:
+                return "知识库中未找到相关信息。"
+            return "\n\n".join(chunks)
+        except Exception as e:
+            return f"知识库检索失败: {e}"
+
+    return retrieve_kb
 
 
-async def web_search(
-    query: str,
-    topic: str = None,
-    time_range: str = None,
-) -> str:
-    """使用 Tavily 搜索引擎获取实时信息（异步）"""
+# ========== 工具 2：网络搜索 ==========
+@tool
+async def web_search(query: str, topic: str = None, time_range: str = None) -> str:
+    """搜索实时外部信息（新闻、天气、股票、近期事件）。"""
     try:
         response = await _tavily_client.search(
             query=query,
@@ -64,12 +66,13 @@ async def web_search(
         return f"搜索失败: {e}"
 
 
+# ========== 工具 3：计算器（保持纯函数，另包一层给 agent 用，便于测试） ==========
 def calculator(expression: str) -> str:
     """
-    执行数学运算（同步，CPU密集型）
+    安全计算数学表达式。
 
-    安全实现：用 ast 模块把表达式解析成语法树，只允许数字和
-    加减乘除取模运算，杜绝 eval() 带来的代码注入风险。
+    白名单只允许数字与加减乘除取模运算符，并用 ast 解析成语法树递归求值，
+    从根上杜绝 eval() 带来的代码注入风险。
     """
     allowed = set("0123456789+-*/().% ")
     if not all(c in allowed for c in expression):
@@ -91,18 +94,19 @@ _BIN_OPS = {
     ast.Mod: operator.mod,
 }
 
+
 def _safe_eval(node):
     """递归遍历 AST 节点，只允许常量和二元/一元算术运算"""
-    if isinstance(node, ast.Constant):          # 数字字面量
+    if isinstance(node, ast.Constant):
         return node.value
-    if isinstance(node, ast.BinOp):             # a + b、a * b 等
+    if isinstance(node, ast.BinOp):
         left = _safe_eval(node.left)
         right = _safe_eval(node.right)
         op_fn = _BIN_OPS.get(type(node.op))
         if op_fn is None:
             raise ValueError(f"不支持的运算符: {type(node.op).__name__}")
         return op_fn(left, right)
-    if isinstance(node, ast.UnaryOp):           # 负号 -a
+    if isinstance(node, ast.UnaryOp):
         operand = _safe_eval(node.operand)
         if isinstance(node.op, ast.USub):
             return -operand
@@ -112,78 +116,7 @@ def _safe_eval(node):
     raise ValueError(f"不支持的表达式节点: {type(node).__name__}")
 
 
-# ========== 2. 工具元数据（OpenAI Function Schema） ==========
-TOOL_SCHEMAS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "retrieve_kb",
-            "description": "从公司内部知识库检索文档（适用于制度、产品手册、内部FAQ）",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "用户问题，如：'公司放假安排'"}
-                },
-                "required": ["query"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-        "description": "搜索实时外部信息（新闻、天气、股票、近期事件）",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "搜索关键词"},
-                "topic": {
-                    "type": "string",
-                    "enum": ["general", "news", "finance"],
-                    "description": "搜索主题：general=通用, news=新闻, finance=金融。搜索新闻类内容请用 news"
-                },
-                "time_range": {
-                    "type": "string",
-                    "enum": ["day", "week", "month", "year"],
-                    "description": "时间范围筛选：day=一天内, week=一周内, month=一月内, year=一年内"
-                }
-            },
-            "required": ["query"]
-        }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "calculator",
-            "description": "计算数学表达式",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "expression": {"type": "string", "description": "数学表达式，如 '123*456'"}
-                },
-                "required": ["expression"]
-            }
-        }
-    }
-]
-
-# ========== 3. 工具注册表（函数名 -> 可调用对象） ==========
-# 注意：异步函数直接放进去，同步函数也放进去，由调用方区分执行
-TOOL_MAP: Dict[str, Callable[..., Any]] = {
-    "retrieve_kb": retrieve_kb,
-    "web_search": web_search,
-    "calculator": calculator,
-}
-
-# ========== 4. 便捷工具函数（供 agent 调用） ==========
-def get_tool_schemas():
-    """返回工具 Schema 列表"""
-    return TOOL_SCHEMAS
-
-def get_tool_map():
-    """返回工具注册表"""
-    return TOOL_MAP
-
-# 标记哪些工具是异步的（便于 agent 判断是否要 await）
-ASYNC_TOOL_NAMES = {"retrieve_kb", "web_search"}
+@tool
+def calculator_tool(expression: str) -> str:
+    """计算数学表达式，如 '123*456'、'(1+2)*3'。"""
+    return calculator(expression)

@@ -1,4 +1,4 @@
-from backend.agent.tools import calculator, get_tool_schemas, get_tool_map, ASYNC_TOOL_NAMES
+from backend.agent.tools import calculator
 
 
 class TestCalculator:
@@ -25,21 +25,3 @@ class TestCalculator:
     def test_whitespace_ok(self):
         # 表达式内部的空白不影响求值（注意：前导空格会导致 ast.parse 报缩进错误）
         assert calculator("1 + 2") == "3"
-
-
-class TestToolRegistry:
-    def test_schema_names_match_registry(self):
-        schema_names = {s["function"]["name"] for s in get_tool_schemas()}
-        assert schema_names == set(get_tool_map().keys())
-
-    def test_schema_structure(self):
-        for schema in get_tool_schemas():
-            fn = schema["function"]
-            assert schema["type"] == "function"
-            assert fn["description"]
-            assert "parameters" in fn
-            assert fn["parameters"]["type"] == "object"
-            assert fn["parameters"]["required"]
-
-    def test_async_markers_valid(self):
-        assert ASYNC_TOOL_NAMES.issubset(get_tool_map().keys())

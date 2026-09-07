@@ -83,7 +83,7 @@ async def rewrite_query(original_query, model=None, history=None):
 # ============ 2. 上下文预算截断 ============
 def _estimate_tokens(text):
     """保守估算文本的 token 数：中文场景 1 字符 ≈ 1 token。
-    若需精确 token 可以换成 tiktoken.encode，但对实习项目此近似足够。"""
+    若需精确 token 可以换成 tiktoken.encode"""
     return len(text)
 
 
