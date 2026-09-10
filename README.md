@@ -27,14 +27,15 @@
 | 模式 | 说明 | 适用场景 |
 |------|------|---------|
 | **标准 RAG** | 文档 -> 切分 -> 向量化 -> 检索 -> 重排序 -> LLM 生成（带引用） | 基于知识库的精准问答 |
-| **Agent 模式** | 使用 LangGraph 搭建 ReAct Agent，可自主调用知识库检索、联网搜索、数学计算等工具 | 需要综合多个信息来源的问题 |
+| **Agent 模式** | 使用 LangChain `create_agent` 搭建 ReAct Agent，可自主调用知识库检索、联网搜索、数学计算等工具 | 需要综合多个信息来源的问题 |
 
 ### 亮点特性
 
 - **多策略文本切分**：固定长度 / 按句子 / 按段落三种方式
-- **两阶段检索**：向量检索粗召回 -> BGE-reranker 精排
+- **混合检索**：向量召回 + BM25 关键词召回，RRF 融合后再 BGE-reranker 精排
 - **查询改写**：让 LLM 将口语化问题转为规范的检索查询
 - **相似度阈值过滤**：自动丢弃低相关片段
+- **Token 预算截断**：按 token 数截断检索上下文，避免撞模型窗口上限
 - **强制引用与防幻觉**：答案标注来源【数字】，无相关信息时明确拒答
 - **流式输出**：标准 SSE 事件流（sources/delta/done），前端打字机效果
 - **多轮对话**：会话持久化（SQLite），查询改写自动消解指代追问
@@ -58,15 +59,14 @@ backend/main.py (FastAPI 后端)
     +-- /ask, /ask/stream ------> backend/core/rag_chain.py (RAG 核心流程)
     |       |                        |
     |       +-> rewrite_query()       LLM 改写查询（结合多轮历史消解指代）
-    |       +-> search_with_scores()  Chroma 向量检索
+    |       +-> search_with_scores()  混合检索（向量 + BM25，RRF 融合）
     |       +-> rerank()              BGE 精排
     |       +-> ask_with_context()    LLM 生成带引用的答案
     |
-    +-- /agent/react ------------> backend/agent/agent.py (LangGraph ReAct Agent)
+    +-- /agent/react ------------> backend/agent/agent.py (LangChain create_agent ReAct Agent)
     |       |                        |
-    |       +-> agent_node           调 LLM，判断是否要调用工具
-    |       +-> tool_node            执行工具（知识库/搜索/计算器）
-    |       +-> should_continue      判断是继续还是结束
+    |       +-> create_agent         自动编排"思考→调用工具→看结果→再思考"的循环
+    |       +-> tools(知识库/搜索/计算器)  @tool 声明，自动生成 schema 并派发调用
     |
     +-- /upload -----------------> backend/core/document_loader.py + vector_store.py
     |
@@ -82,10 +82,10 @@ rag-knowledge-base/
 │   ├── config.py             # 配置（dataclass + 环境变量）
 │   ├── storage.py            # SQLite 会话持久化
 │   ├── core/                 # RAG 核心链路（加载→切分→向量化→检索→重排→生成）
-│   └── agent/                # LangGraph ReAct Agent 与工具
+│   └── agent/                # LangChain create_agent ReAct Agent 与工具
 ├── frontend/
 │   └── app.py                # Streamlit 界面
-├── tests/                    # pytest 测试（67 个）
+├── tests/                    # pytest 测试（76 个）
 ├── scripts/                  # 评估与调试脚本
 ├── data/                     # 本地文档（不入库）
 └── .github/workflows/ci.yml  # CI
@@ -101,11 +101,11 @@ rag-knowledge-base/
 |------|------|------|
 | Web 框架 | FastAPI + uvicorn | 异步高性能 |
 | 向量数据库 | ChromaDB (PersistentClient) | 持久化到磁盘 |
-| 大模型 API | DeepSeek API / 硅基流动 | 可通过环境变量切换 |
+| 大模型 API | 智谱 AI GLM-4-Flash（OpenAI 兼容） | 可通过环境变量切换 |
 | 嵌入模型 | BAAI/bge-large-zh-v1.5 (硅基流动) | 文本向量化 |
 | 重排序模型 | BAAI/bge-reranker-v2-m3 (硅基流动) | 精排 |
 | 网络搜索 | Tavily API | Agent 联网搜索 |
-| Agent 框架 | LangGraph | StateGraph 状态机 |
+| Agent 框架 | LangChain `create_agent` | 声明式 ReAct 编排，自动派发工具 |
 | 客户端 | httpx (异步) + tenacity (重试) | 网络请求与容错 |
 
 ### 前端
@@ -123,7 +123,7 @@ rag-knowledge-base/
 ### 环境要求
 
 - Python 3.11+
-- 网络环境 （需要访问 DeepSeek API 和硅基流动 API）
+- 网络环境 （需要访问智谱 AI、硅基流动、Tavily 等 API）
 
 ### 安装
 
@@ -217,12 +217,12 @@ event: done      → 结束标记（{"session_id": "..."}，新建会话时返�
 | `backend/core/document_loader.py` | 解析 PDF/TXT/DOCX，提取文本 | pypdf、python-docx、边界处理 |
 | `backend/core/text_splitter.py` | 按固定长度 / 句子 / 段落切分文本 | chunk 策略、overlap 设计 |
 | `backend/core/embedding_util.py` | 调硅基流动 API 生成向量 | httpx 异步请求、异常封装 |
-| `backend/core/vector_store.py` | Chroma 封装（增删查 + 去重 + 阈值过滤 + 文档管理） | 向量检索、余弦距离、asyncio.to_thread |
+| `backend/core/vector_store.py` | Chroma 封装（增删查 + 去重 + 阈值过滤 + 混合检索 + 文档管理） | 向量检索、BM25、RRF 融合、asyncio.to_thread |
 | `backend/core/reranker.py` | BGE-reranker 精排 + 优雅降级 | 两阶段检索模式 |
-| `backend/core/rag_chain.py` | RAG 核心流程编排 + 分类重试策略 | 查询改写（支持多轮历史）、tenacity、流式输出 |
+| `backend/core/rag_chain.py` | RAG 核心流程编排 + 分类重试 + token 预算截断 | 查询改写（支持多轮历史）、tenacity、流式输出、truncate_context |
 | `backend/storage.py` | SQLite 会话/消息持久化（多轮对话） | 标准库 sqlite3、会话 CRUD |
-| `backend/agent/tools.py` | Agent 工具（知识库、搜索、计算器）+ Function Schema | AST 安全求值、Function Calling |
-| `backend/agent/agent.py` | LangGraph ReAct Agent | 状态机 Node/Edge、reducer |
+| `backend/agent/tools.py` | Agent 工具（知识库检索、联网搜索、计算器） | @tool 装饰器、AST 安全求值、参数白名单校验 |
+| `backend/agent/agent.py` | LangChain create_agent ReAct Agent | ChatOpenAI、@tool 组合、create_agent 编排 |
 | `backend/main.py` | FastAPI 后端服务（路由 + 鉴权 + SSE） | 依赖注入、异步路由 |
 | `frontend/app.py` | Streamlit 前端（上传 + 对话 + 会话 + Agent 可视化） | session_state、SSE 解析 |
 | `scripts/inspect_db.py` | 调试工具：查看知识库内容 | Chroma get() |
@@ -256,9 +256,17 @@ Chroma 的 Cosine 模式下返回的 dist 是余弦距离（`dist = 1 - cos_sim`
 
 流式接口 `/ask/stream` 返回标准 `text/event-stream`，用三种事件分离"正文"与"来源"：先推 `sources`（检索/重排结果，含文件名元数据），再逐段推 `delta`（正文增量），最后以 `done`（携带 session_id）收尾。前端按事件类型分别渲染，不存在解析歧义。
 
-### Agent 状态机的 reducer
+### Token 预算截断
 
-LangGraph 中 `AgentState` 的 `messages` 字段通过 `Annotated[list, operator.add]` 声明了归约器，确保每轮返回的新消息是**追加**到历史列表而非替换。缺失此设置会导致消息链断裂、API 报错 —— 详见 [bug 修复记录](./agent_bug_fix_record.txt)。
+`rag_chain.py` 的 `truncate_context` 按 token 数从头部截断检索上下文（`MAX_CONTEXT_TOKENS`，默认 4000），保证喂给 LLM 的上下文加上生成长度不超过模型窗口。只丢尾部、不重排，保留片段仍与引用编号一一对应。
+
+### 混合检索（RRF 融合）
+
+`vector_store.py` 默认启用混合检索：向量余弦召回与 BM25 关键词召回（bigram 分词）各自取 `HYBRID_TOP_K` 条，再用 RRF（`k=60`）融合去重。BM25 弥补了向量检索对专有名词、字面术语召回不足的问题。
+
+### Agent 编排（create_agent）
+
+Agent 用 `langchain.agents.create_agent` 搭建：`@tool` 声明的工具自动生成 schema 并派发 `tool_calls`，框架自动处理"思考→调用工具→看结果→再思考"的循环与终止，不再需要手写 StateGraph 的 node/edge/reducer。
 
 ---
 
@@ -271,6 +279,7 @@ LangGraph 中 `AgentState` 的 `messages` 字段通过 `Annotated[list, operator
 | v2.1 | `b44b9c2` | 全面异步重构、修复 LangGraph reducer Bug |
 | v2.2 | `03bec82` | 可视化评估报告 |
 | v2.3 | `9d77be2`、`e79fa5a` | 完善工程化，添加 Dockerfile |
+| v3.0 | `5a742f7`~`45a035c` | 三层分包、embedding 批量化与连接池复用、token 预算截断、混合检索、Agent 重构为 LangChain create_agent |
 
 ---
 
