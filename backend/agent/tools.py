@@ -40,7 +40,13 @@ def make_retrieve_kb(kb: KnowledgeBase):
 # ========== 工具 2：网络搜索 ==========
 @tool
 async def web_search(query: str, topic: str = None, time_range: str = None) -> str:
-    """搜索实时外部信息（新闻、天气、股票、近期事件）。"""
+    """搜索实时外部信息（新闻、天气、股票、近期事件）。
+    可选参数：topic ∈ general/news/finance；time_range ∈ day/week/month/year。"""
+    # 白名单兜底：LLM 可能传非法值，非法则忽略，避免整个搜索失败
+    if topic not in {"general", "news", "finance"}:
+        topic = None
+    if time_range not in {"day", "week", "month", "year"}:
+        time_range = None
     try:
         response = await _tavily_client.search(
             query=query,
